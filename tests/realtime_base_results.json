@@ -1,0 +1,18 @@
+{
+  "model": "base",
+  "compute_type": "int8",
+  "sample_rate": 16000,
+  "chunk_duration_sec": 2,
+  "total_audio_sec": 220.0,
+  "num_chunks": 110,
+  "model_load_time_sec": 0.448,
+  "total_decode_time_sec": 27.356,
+  "real_time_factor": 0.124,
+  "language": "en",
+  "language_probability": 0.5140606164932251,
+  "reference_chars": 5437,
+  "hypothesis_chars": 446,
+  "wer": 0.9605963791267306,
+  "cer": 0.9247746919256943,
+  "hypothesis": "Thank you. Let's go. c'est ce que c'est que c'est le genre de... have you been for following the balanced diet and engaging in regular exercise. I must admit, my died. hasn't been the healthiest place. hittin', hittin' hittin', hittin' hittin' hittin' hittin'. Thank you so much. Thank you. I'm sorry, I'm sorry, I'm sorry, I'm sorry, I'm sorry. You Thank you. Thank you. Thank you. Thank you. Thank you. Thank you. You But you can see my mother."
+}

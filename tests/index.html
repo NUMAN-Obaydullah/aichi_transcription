@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Apple STT Real-time Transcription</title>
+  <style>
+    body { font-family:'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin:0; padding:20px;
+      background:linear-gradient(135deg,#667eea 0%,#764ba2 100%); color:#333; min-height:100vh; }
+    .container { max-width:1200px; margin:0 auto; background:white; border-radius:15px;
+      box-shadow:0 20px 40px rgba(0,0,0,0.1); overflow:hidden; }
+    .header { background:#2c3e50; color:white; padding:20px 30px; text-align:center; }
+    .header h1 { margin:0; font-size:24px; font-weight:300; }
+    .status { padding:15px 30px; background:#ecf0f1; border-bottom:1px solid #bdc3c7; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    .status-indicator { width:12px; height:12px; border-radius:50%; background:#e74c3c; animation:pulse 2s infinite; }
+    .status-indicator.connected { background:#27ae60; }
+    @keyframes pulse { 0%{opacity:1} 50%{opacity:.5} 100%{opacity:1} }
+    .content { display:grid; grid-template-columns:1fr; gap:16px; padding:20px 30px; }
+    @media (min-width: 980px) { .content { grid-template-columns: 1fr 1fr; } }
+    .pane { background:#fff; border:1px solid #e9ecef; border-radius:12px; overflow:hidden; display:flex; flex-direction:column; }
+    .pane-header { background:#f1f3f5; padding:10px 16px; font-weight:600; color:#495057; border-bottom:1px solid #e9ecef; display:flex; justify-content:space-between; gap:10px; align-items:center; flex-wrap:wrap; }
+    .meta { font-size:12px; color:#6c757d; }
+    .transcription-container { min-height:400px; max-height:500px; overflow-y:auto; padding:30px; background:#f8f9fa; }
+    .partial-text { background:#fff3cd; border:1px solid #ffeaa7; border-radius:8px; padding:15px; margin-bottom:15px; font-style:italic; color:#856404; transition:all .3s ease; }
+    .final-text { background:#d4edda; border:1px solid #c3e6cb; border-radius:8px; padding:15px; margin-bottom:15px; color:#155724; border-left:4px solid #28a745; }
+    .timestamp { font-size:12px; color:#6c757d; margin-bottom:5px; }
+    .text-content { line-height:1.6; font-size:16px; white-space:pre-wrap; }
+    .controls { padding:20px 30px; background:#f8f9fa; border-top:1px solid #dee2e6; text-align:center; display:flex; flex-wrap:wrap; gap:10px; justify-content:center; }
+    .btn { background:#007bff; color:white; border:none; padding:10px 20px; border-radius:5px; cursor:pointer; font-size:14px; transition:background .3s ease; }
+    .btn:hover { background:#0056b3; }
+    .btn:disabled { background:#6c757d; cursor:not-allowed; }
+    .empty-state { text-align:center; color:#6c757d; font-style:italic; padding:40px 20px; }
+    .scrollbar { scrollbar-width:thin; scrollbar-color:#007bff #f1f1f1; }
+    .scrollbar::-webkit-scrollbar { width:8px; }
+    .scrollbar::-webkit-scrollbar-track { background:#f1f1f1; border-radius:10px; }
+    .scrollbar::-webkit-scrollbar-thumb { background:#007bff; border-radius:10px; }
+    .scrollbar::-webkit-scrollbar-thumb:hover { background:#0056b3; }
+    .badge { font-size:12px; padding:.25rem .5rem; border:1px solid #bdc3c7; border-radius:999px; background:#fff; color:#2c3e50; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header"><h1>🎤 Apple STT Real-time Transcription</h1></div>
+
+    <div class="status">
+      <span class="status-indicator" id="statusIndicator"></span>
+      <span id="statusText">Connecting…</span>
+      <span class="badge" id="wsInfo"></span>
+      <span class="badge" id="latencyInfo" style="display:none;"></span>
+      <span class="badge" id="localeInfo" style="display:none;"></span>
+    </div>
+
+    <div class="content">
+      <!-- LEFT: Live (current) -->
+      <div class="pane">
+        <div class="pane-header">
+          <span>Live (current)</span>
+          <span class="meta" id="liveMeta"></span>
+        </div>
+        <div class="transcription-container scrollbar" id="liveContainer">
+          <div class="empty-state" id="liveEmpty">Waiting for transcription to start...</div>
+        </div>
+      </div>
+
+      <!-- RIGHT: Finalized (scrolling log) -->
+      <div class="pane">
+        <div class="pane-header">
+          <span>Finalized (log)</span>
+          <span class="meta" id="logMeta"></span>
+        </div>
+        <div class="transcription-container scrollbar" id="logContainer">
+          <div class="empty-state" id="logEmpty">Final results will appear here…</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button class="btn" id="copyLiveBtn">Copy Live</button>
+      <button class="btn" id="copyLogBtn">Copy Log</button>
+      <button class="btn" id="saveBtn">Save Transcript</button>
+      <!-- New: manual snapshot of Live pane -->
+      <button class="btn" id="saveLivePaneBtn">Save Live Pane</button>
+      <button class="btn" id="clearBtn">Clear Both</button>
+      <button class="btn" id="reconnectBtn" disabled>Reconnect</button>
+      <button class="btn" id="stopBtn">Stop Transcription</button>
+      <!-- New: Meta controls -->
+      <button class="btn" id="toggleMetaBtn">Show Meta</button>
+      <button class="btn" id="saveMetaBtn">Save Meta</button>
+      <!-- New: All panes controls -->
+      <button class="btn" id="toggleAllPaneBtn">Show All</button>
+      <button class="btn" id="saveAllPaneBtn">Save All</button>
+    </div>
+  </div>
+
+  <!-- New: Meta history panel -->
+  <div id="metaPanel" class="pane" style="display:none; max-width:1200px; margin:12px auto;">
+    <div class="pane-header">
+      <span>Meta History (liveMeta)</span>
+      <span class="meta" id="metaMeta"></span>
+    </div>
+    <div class="transcription-container scrollbar" style="max-height:260px;">
+      <textarea id="metaTextArea" readonly style="width:100%; height:220px; box-sizing:border-box; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;"></textarea>
+    </div>
+  </div>
+
+  <!-- New: All panes snapshots panel -->
+  <div id="allPanePanel" class="pane" style="display:none; max-width:1200px; margin:12px auto;">
+    <div class="pane-header">
+      <span>All Pane Snapshots</span>
+      <span class="meta" id="allPaneMeta"></span>
+    </div>
+    <div class="transcription-container scrollbar" style="max-height:260px;">
+      <textarea id="allPaneTextArea" readonly style="width:100%; height:220px; box-sizing:border-box; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;"></textarea>
+    </div>
+  </div>
+
+  <script>
+    // Elements
+    const statusIndicator = document.getElementById('statusIndicator');
+    const statusText = document.getElementById('statusText');
+    const wsInfo = document.getElementById('wsInfo');
+    const latencyInfo = document.getElementById('latencyInfo');
+    const localeInfo = document.getElementById('localeInfo');
+
+    const liveContainer = document.getElementById('liveContainer');
+    const liveEmpty = document.getElementById('liveEmpty');
+    const liveMeta = document.getElementById('liveMeta');
+
+    const logContainer = document.getElementById('logContainer');
+    const logEmpty = document.getElementById('logEmpty');
+    const logMeta = document.getElementById('logMeta');
+
+    const copyLiveBtn = document.getElementById('copyLiveBtn');
+    const copyLogBtn = document.getElementById('copyLogBtn');
+    const saveBtn = document.getElementById('saveBtn');
+    // New:
+    const saveLivePaneBtn = document.getElementById('saveLivePaneBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const reconnectBtn = document.getElementById('reconnectBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    // New: meta UI elements
+    const toggleMetaBtn = document.getElementById('toggleMetaBtn');
+    const saveMetaBtn = document.getElementById('saveMetaBtn');
+    const metaPanel = document.getElementById('metaPanel');
+    const metaTextArea = document.getElementById('metaTextArea');
+    const metaMeta = document.getElementById('metaMeta');
+    // New: all panes UI elements
+    const toggleAllPaneBtn = document.getElementById('toggleAllPaneBtn');
+    const saveAllPaneBtn = document.getElementById('saveAllPaneBtn');
+    const allPanePanel = document.getElementById('allPanePanel');
+    const allPaneTextArea = document.getElementById('allPaneTextArea');
+    const allPaneMeta = document.getElementById('allPaneMeta');
+
+    // State
+    let ws = null;
+    let reconnectAttempts = 0;
+    let manualStop = false; // when true, do not auto-reconnect on close
+
+    // Live view (left)
+    let committed = "";   // cumulative final from server
+    let lastShown = "";   // last rendered full string (final+partial)
+
+    // keep a single in-memory finalized transcript
+    let fullTranscript = "";
+    // Per-session tracking
+    let sessions = [];
+    let sessionTranscript = "";
+    let sessionStartMs = null;
+
+    // Live rendering nodes (persistent, to avoid flicker/clears)
+    let liveFinalNode = null;
+    let livePartialNode = null;
+    let rafPending = null;
+    let pendingText = null;
+
+    // Log (right)
+    let prevCommitted = "";
+    let logCount = 0;
+
+    // Store every text that goes into liveMeta
+    let liveMetaHistory = [];
+    let liveMetaAllText = ""; // concatenated lines
+    // Optional: expose for debugging in console
+    try { window.liveMetaHistory = liveMetaHistory; window.liveMetaAllText = () => liveMetaAllText; } catch {}
+
+    // New: Store every pane snapshot (live + log context)
+    let paneSnapshots = [];
+    let allPaneText = "";
+    let lastSnapshotKey = "";
+    try { window.paneSnapshots = paneSnapshots; window.allPaneText = () => allPaneText; } catch {}
+
+    // Utils
+    function wsURL() {
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      const host = location.hostname || 'localhost';
+      const port = 8765; // must match WS_PORT in Python
+      const url = `${proto}://${host}:${port}`;
+      wsInfo.textContent = url;
+      return url;
+    }
+    function setStatus(connected, text) {
+      statusIndicator.classList.toggle('connected', !!connected);
+      statusText.textContent = text || (connected ? 'Connected – listening…' : 'Disconnected');
+    }
+    function ensureVisible(emptyEl, containerEl) {
+      if (emptyEl && emptyEl.parentNode) {
+        // Remove only the placeholder; never clear existing content
+        try { emptyEl.remove(); } catch { emptyEl.style.display = 'none'; }
+      }
+    }
+    function block(kind, text, ts) {
+      const wrap = document.createElement('div');
+      wrap.className = kind === 'final' ? 'final-text' : 'partial-text';
+
+      const stamp = document.createElement('div');
+      stamp.className = 'timestamp';
+      stamp.textContent = (kind === 'final' ? 'Final' : 'Partial') + ' • ' + new Date(ts).toLocaleTimeString();
+      wrap.appendChild(stamp);
+
+      const body = document.createElement('div');
+      body.className = 'text-content';
+      body.textContent = text.trim();
+      wrap.appendChild(body);
+      return wrap;
+    }
+
+    // Create (once) the persistent nodes for the Live pane
+    function ensureLiveNodes() {
+      if (liveFinalNode && livePartialNode) return;
+      ensureVisible(liveEmpty, liveContainer);
+      liveContainer.innerHTML = '';
+
+      // Final node
+      liveFinalNode = document.createElement('div');
+      liveFinalNode.className = 'final-text';
+      const fTs = document.createElement('div');
+      fTs.className = 'timestamp';
+      fTs.textContent = 'Final • ' + new Date().toLocaleTimeString();
+      const fText = document.createElement('div');
+      fText.className = 'text-content';
+      fText.textContent = '';
+      liveFinalNode.appendChild(fTs);
+      liveFinalNode.appendChild(fText);
+
+      // Partial node
+      livePartialNode = document.createElement('div');
+      livePartialNode.className = 'partial-text';
+      const pTs = document.createElement('div');
+      pTs.className = 'timestamp';
+      pTs.textContent = 'Partial • ' + new Date().toLocaleTimeString();
+      const pText = document.createElement('div');
+      pText.className = 'text-content';
+      pText.textContent = '';
+      livePartialNode.appendChild(pTs);
+      livePartialNode.appendChild(pText);
+
+      liveContainer.appendChild(liveFinalNode);
+      liveContainer.appendChild(livePartialNode);
+    }
+
+    // Stable live renderer (no container clears each update)
+    function renderLiveCore(fullText) {
+      ensureLiveNodes();
+
+      // Update timestamps (optional)
+      liveFinalNode.querySelector('.timestamp').textContent = 'Final • ' + new Date().toLocaleTimeString();
+      livePartialNode.querySelector('.timestamp').textContent = 'Partial • ' + new Date().toLocaleTimeString();
+
+      if (fullText.startsWith(committed)) {
+        const suffix = fullText.slice(committed.length);
+        liveFinalNode.querySelector('.text-content').textContent = committed;
+        // Clear partial when there's no suffix
+        livePartialNode.querySelector('.text-content').textContent = suffix.trim() ? suffix : '';
+      } else {
+        // Non-cumulative partials: keep committed, show the incoming as partial
+        liveFinalNode.querySelector('.text-content').textContent = committed;
+        const cleaned = fullText.trim();
+        livePartialNode.querySelector('.text-content').textContent = cleaned ? cleaned : '';
+      }
+
+      const liveFinalChars = committed.length;
+      const currentLive = livePartialNode.querySelector('.text-content').textContent || '';
+      const currentMeta = `final: ${liveFinalChars} | live: ${currentLive.length}`;
+      liveMeta.textContent = currentMeta;
+      // persist every meta update
+      try {
+        liveMetaHistory.push({ ts: Date.now(), text: currentMeta });
+        liveMetaAllText += (liveMetaAllText ? '\n' : '') + currentMeta;
+        if (metaPanel && metaPanel.style.display !== 'none') {
+          metaTextArea.value = liveMetaAllText;
+          metaMeta.textContent = `${liveMetaHistory.length} updates`;
+        }
+      } catch {}
+
+      // Snapshot this pane state (avoid exact duplicates)
+      try {
+        const snapKey = committed + '|' + currentLive;
+        if (snapKey !== lastSnapshotKey) {
+          snapshotCurrentPanes('live-update', { liveFinal: committed, livePartial: currentLive });
+          lastSnapshotKey = snapKey;
+        }
+      } catch {}
+
+      liveContainer.scrollTop = liveContainer.scrollHeight;
+      lastShown = fullText;
+    }
+
+    function renderLive(fullText) {
+      pendingText = fullText;
+      if (rafPending) return;
+      rafPending = requestAnimationFrame(() => {
+        rafPending = null;
+        renderLiveCore(pendingText);
+      });
+    }
+
+    // Append-only helpers for Live pane (no clears)
+    function ensureShownNoClear(emptyEl) {
+      if (emptyEl && emptyEl.parentNode) {
+        emptyEl.style.display = 'none';
+        // Do NOT touch container.innerHTML here
+      }
+    }
+    function updateLiveMetaCounts() {
+      const finals = liveContainer.querySelectorAll('.final-text').length;
+      const partials = liveContainer.querySelectorAll('.partial-text').length;
+      const meta = `finals: ${finals} | partials: ${partials}`;
+      liveMeta.textContent = meta;
+      // persist every meta update
+      try {
+        liveMetaHistory.push({ ts: Date.now(), text: meta });
+        liveMetaAllText += (liveMetaAllText ? '\n' : '') + meta;
+        if (metaPanel && metaPanel.style.display !== 'none') {
+          metaTextArea.value = liveMetaAllText;
+          metaMeta.textContent = `${liveMetaHistory.length} updates`;
+        }
+      } catch {}
+    }
+    function appendLive(kind, text, ts) {
+      if (!text || !text.trim()) return;
+      ensureShownNoClear(liveEmpty);
+      const card = block(kind, text, ts || Date.now());
+      liveContainer.appendChild(card);
+      liveContainer.scrollTop = liveContainer.scrollHeight;
+      updateLiveMetaCounts();
+    }
+
+    // Log appending (right)
+    function appendToLog(newText, ts) {
+      if (!newText) return;
+      ensureVisible(logEmpty, logContainer);
+      const chunks = newText
+        .split(/(?<=[\.\!\?])\s+/)
+        .map(s => s.trim())
+        .filter(Boolean);
+      chunks.forEach(chunk => {
+        const card = block('final', chunk, ts || Date.now());
+        logContainer.appendChild(card);
+        logCount++;
+        // Snapshot after each final chunk append
+        try { snapshotCurrentPanes('final-append', { logLast: chunk }); } catch {}
+      });
+      logContainer.scrollTop = logContainer.scrollHeight;
+      logMeta.textContent = `${logCount} item${logCount === 1 ? '' : 's'}`;
+    }
+
+    // Message handling (single persistent live block; append-only log)
+    function handleMessage(msg) {
+      if (!msg || typeof msg !== 'object') return;
+
+      if (typeof msg.timestamp === 'number') {
+        const delta = Math.max(0, Date.now() - msg.timestamp * 1000);
+        latencyInfo.style.display = 'inline-block';
+        latencyInfo.textContent = `~${delta|0} ms`;
+      }
+
+      if (msg.type === 'info' && typeof msg.text === 'string') {
+        if (msg.text.startsWith('Locale:')) {
+          localeInfo.style.display = 'inline-block';
+          localeInfo.textContent = msg.text.trim();
+        }
+        return;
+      }
+
+      const text = typeof msg.text === 'string' ? msg.text.trim() : '';
+      if (!text) return;
+      const ts = msg.timestamp ? msg.timestamp * 1000 : Date.now();
+
+      if (msg.type === 'final') {
+        // Compute new suffix to avoid duplicating past finals in the log
+        const newSuffix = text.startsWith(prevCommitted) ? text.slice(prevCommitted.length) : text;
+        if (newSuffix.trim()) {
+          appendToLog(newSuffix, ts); // right pane only
+          // Accumulate full transcript across the entire runtime
+          fullTranscript += (fullTranscript ? ' ' : '') + newSuffix.trim();
+          // Accumulate per-session transcript
+          sessionTranscript += (sessionTranscript ? ' ' : '') + newSuffix.trim();
+        }
+        prevCommitted = text;
+        committed = text;
+        // Update the single live block with the full text
+        renderLive(text);
+      } else if (msg.type === 'partial') {
+        // Update the single live block with the latest partial
+        renderLive(text);
+      }
+    }
+
+    function finalizeAndSaveSession() {
+      const text = (sessionTranscript || '').trim();
+      if (!text) { sessionStartMs = null; return; }
+      const startIso = new Date(sessionStartMs || Date.now()).toISOString().replace(/[:.]/g, '-');
+      const filename = `transcript-session-${startIso}.txt`;
+      saveTextAsFile(filename, text);
+      sessions.push({ start: sessionStartMs, end: Date.now(), text });
+      sessionTranscript = '';
+      sessionStartMs = null;
+    }
+
+    // WebSocket lifecycle
+    function connect() {
+      manualStop = false; // reset manual stop when reconnecting
+      setStatus(false, 'Connecting…');
+      reconnectBtn.disabled = true;
+      stopBtn.disabled = false;
+
+      let url;
+      try { url = wsURL(); } catch { url = 'ws://localhost:8765'; }
+
+      try { ws = new WebSocket(url); }
+      catch { setStatus(false, 'Connection error'); scheduleReconnect(); return; }
+
+      ws.onopen = () => {
+        // Start a new session context on each open
+        sessionStartMs = Date.now();
+        sessionTranscript = '';
+        prevCommitted = '';
+        committed = '';
+        reconnectAttempts = 0;
+        setStatus(true, 'Connected – listening…');
+        reconnectBtn.disabled = true;
+        stopBtn.disabled = false;
+      };
+      ws.onmessage = (e) => { try { handleMessage(JSON.parse(e.data)); } catch {} };
+      ws.onclose = () => {
+        // Auto-save the just-finished session
+        try { snapshotCurrentPanes('ws-close'); } catch {}
+        finalizeAndSaveSession();
+        if (manualStop) {
+          setStatus(false, 'Stopped');
+          reconnectBtn.disabled = false;
+          stopBtn.disabled = true;
+          return; // do not auto-reconnect
+        }
+        setStatus(false, 'Disconnected');
+        reconnectBtn.disabled = false;
+        scheduleReconnect();
+      };
+      ws.onerror = () => { setStatus(false, 'Connection error'); reconnectBtn.disabled = false; };
+    }
+
+    function scheduleReconnect() {
+      reconnectAttempts++;
+      const delay = Math.min(1000 * Math.pow(2, reconnectAttempts - 1), 8000);
+      setTimeout(() => { if (!ws || ws.readyState === WebSocket.CLOSED) connect(); }, delay);
+    }
+
+    function stopTranscription() {
+      manualStop = true;
+      try { if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) ws.close(); } catch {}
+      stopBtn.disabled = true;
+      reconnectBtn.disabled = false;
+      // Do NOT clear any content here
+    }
+
+    // Controls
+    function copyToClipboard(text) {
+      if (!text) return;
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); } finally { ta.remove(); }
+    }
+
+    function saveTextAsFile(filename, text) {
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 0);
+    }
+
+    // Helpers to snapshot/save the Live pane before any reset/clear
+    function getLivePaneText() {
+      // If persistent nodes exist, use them
+      if (liveFinalNode) {
+        const t1 = liveFinalNode.querySelector('.text-content')?.textContent || '';
+        const t2 = livePartialNode?.querySelector('.text-content')?.textContent || '';
+        return [t1, t2].filter(Boolean).join('\n');
+      }
+      // Fallback: collect all visible live text nodes
+      const nodes = liveContainer.querySelectorAll('.text-content');
+      return Array.from(nodes).map(n => n.textContent).join('\n');
+    }
+
+    function saveLivePaneSnapshot(suffix) {
+      try {
+        const text = (getLivePaneText() || '').trim();
+        if (!text) return;
+        const ts = new Date().toISOString().replace(/[:.]/g, '-');
+        const filename = `livepane-${ts}${suffix ? `-${suffix}` : ''}.txt`;
+        saveTextAsFile(filename, text);
+      } catch {}
+    }
+
+    copyLiveBtn.onclick = () => {
+      let liveText = '';
+      // Gather from persistent nodes if present
+      if (liveFinalNode) {
+        const t1 = liveFinalNode.querySelector('.text-content')?.textContent || '';
+        const t2 = livePartialNode?.querySelector('.text-content')?.textContent || '';
+        liveText = [t1, t2].filter(Boolean).join('\n');
+      } else {
+        const nodes = liveContainer.querySelectorAll('.text-content');
+        nodes.forEach(n => liveText += (liveText ? '\n' : '') + n.textContent);
+      }
+      copyToClipboard(liveText);
+    };
+
+    copyLogBtn.onclick = () => {
+      const nodes = logContainer.querySelectorAll('.text-content');
+      const text = Array.from(nodes).map(n => n.textContent).join('\n');
+      copyToClipboard(text);
+    };
+
+    saveBtn.onclick = () => {
+      // Prefer finals-only transcript
+      let text = (fullTranscript || '').trim();
+      if (!text) {
+        // Fallback: reconstruct from log cards
+        const nodes = logContainer.querySelectorAll('.text-content');
+        text = Array.from(nodes).map(n => n.textContent).join('\n').trim();
+      }
+      if (!text) {
+        // Last resort: current live (final + partial)
+        const t1 = liveFinalNode?.querySelector('.text-content')?.textContent || '';
+        const t2 = livePartialNode?.querySelector('.text-content')?.textContent || '';
+        text = [t1, t2].filter(Boolean).join(' ').trim();
+      }
+      if (!text) return;
+      const ts = new Date().toISOString().replace(/[:.]/g, '-');
+      const filename = `transcript-${ts}.txt`;
+      saveTextAsFile(filename, text);
+    };
+
+    // Wire manual Save Live Pane button
+    saveLivePaneBtn.onclick = () => saveLivePaneSnapshot('manual');
+
+    // On Clear, snapshot before wiping the live UI
+    const _origClearHandler = clearBtn.onclick;
+    clearBtn.onclick = () => {
+      saveLivePaneSnapshot('before-clear');
+      try { snapshotCurrentPanes('before-clear'); } catch {}
+      // proceed with original clear code
+      // live
+      committed = '';
+      lastShown = '';
+      prevCommitted = '';
+      fullTranscript = '';
+      sessionTranscript = '';
+      sessionStartMs = null;
+      liveContainer.innerHTML = '';
+      liveEmpty.style.display = 'block';
+      liveContainer.appendChild(liveEmpty);
+      liveMeta.textContent = '';
+      liveFinalNode = null;
+      livePartialNode = null;
+      // log
+      logContainer.innerHTML = '';
+      logEmpty.style.display = 'block';
+      logContainer.appendChild(logEmpty);
+      logMeta.textContent = '';
+      logCount = 0;
+    };
+
+    stopBtn.onclick = stopTranscription;
+    reconnectBtn.onclick = () => { try { ws && ws.close(); } catch {} connect(); };
+    window.addEventListener('beforeunload', () => { try { ws && ws.close(); } catch {} });
+
+    // New: Meta panel helpers and actions
+    function refreshMetaPanel() {
+      metaTextArea.value = liveMetaAllText || '';
+      metaMeta.textContent = `${liveMetaHistory.length} updates`;
+    }
+
+    // New: All panes helpers and actions
+    function formatSnapshot(entry) {
+      const dt = new Date(entry.ts).toISOString();
+      const parts = [
+        `[${dt}] ${entry.reason || 'update'}`,
+        entry.liveFinal ? `LIVE_FINAL: ${entry.liveFinal}` : 'LIVE_FINAL:',
+        entry.livePartial ? `LIVE_PARTIAL: ${entry.livePartial}` : 'LIVE_PARTIAL:',
+        `LOG_COUNT: ${entry.logCount}`,
+        entry.logLast ? `LOG_LAST: ${entry.logLast}` : null
+      ].filter(Boolean);
+      return parts.join('\n');
+    }
+
+    function snapshotCurrentPanes(reason, opts = {}) {
+      // Gather texts
+      const liveFinal = (opts.liveFinal !== undefined)
+        ? opts.liveFinal
+        : (liveFinalNode?.querySelector('.text-content')?.textContent || '');
+      const livePartial = (opts.livePartial !== undefined)
+        ? opts.livePartial
+        : (livePartialNode?.querySelector('.text-content')?.textContent || '');
+      // Log context
+      const logCountNow = logCount;
+      const logLast = (opts.logLast !== undefined)
+        ? opts.logLast
+        : (logContainer.querySelector('.text-content:last-of-type')?.textContent || '');
+
+      const entry = { ts: Date.now(), reason, liveFinal, livePartial, logCount: logCountNow, logLast };
+      paneSnapshots.push(entry);
+
+      const textBlock = formatSnapshot(entry);
+      allPaneText += (allPaneText ? '\n\n' : '') + textBlock;
+      if (allPanePanel && allPanePanel.style.display !== 'none') {
+        allPaneTextArea.value = allPaneText;
+        allPaneMeta.textContent = `${paneSnapshots.length} snapshots`;
+      }
+    }
+
+    function refreshAllPanePanel() {
+      allPaneTextArea.value = allPaneText || '';
+      allPaneMeta.textContent = `${paneSnapshots.length} snapshots`;
+    }
+
+    toggleMetaBtn.onclick = () => {
+      const willShow = metaPanel.style.display === 'none';
+      if (willShow) refreshMetaPanel();
+      metaPanel.style.display = willShow ? 'block' : 'none';
+      toggleMetaBtn.textContent = willShow ? 'Hide Meta' : 'Show Meta';
+    };
+
+    // Wire All panes panel
+    toggleAllPaneBtn.onclick = () => {
+      const willShow = allPanePanel.style.display === 'none';
+      if (willShow) refreshAllPanePanel();
+      allPanePanel.style.display = willShow ? 'block' : 'none';
+      toggleAllPaneBtn.textContent = willShow ? 'Hide All' : 'Show All';
+    };
+
+    saveAllPaneBtn.onclick = () => {
+      const text = (allPaneText || '').trim();
+      if (!text) return;
+      const ts = new Date().toISOString().replace(/[:.]/g, '-');
+      const filename = `allPanes-${ts}.txt`;
+      saveTextAsFile(filename, text);
+    };
+
+    // Start
+    connect();
+  </script>
+</body>
+</html>
